@@ -1,0 +1,21 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/*
+
+# Environment and Secrets
+.env
+.flaskenv
+
+# Local Databases
+*.db
+*.sqlite3
+
+# Docker local logs
+*.log
+
+# OS specific
+.DS_Store
+Thumbs.db

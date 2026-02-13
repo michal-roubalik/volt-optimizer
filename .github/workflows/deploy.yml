@@ -1,0 +1,59 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  # -------------------------------------------------------------------------
+  # JOB 1: TEST - Ensures the code logic is sound before touching production
+  # -------------------------------------------------------------------------
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Essential test tools
+          pip install pytest httpx pytest-mock
+          # Install all backend requirements for the optimizer and database
+          if [ -f backend/requirements.txt ]; then pip install -r backend/requirements.txt; fi
+
+      - name: Run Pytest
+        env:
+          # Force SQLite so we don't need a real Postgres instance to run unit tests
+          DATABASE_URL: "sqlite:///./test.db"
+          ENTSOE_API_KEY: "test_key_dummy"
+        run: |
+          # Ensure Python looks inside the backend folder for main.py, optimizer.py, etc.
+          export PYTHONPATH=$PYTHONPATH:$(pwd)/backend
+          pytest backend/tests
+
+  # -------------------------------------------------------------------------
+  # JOB 2: DEPLOY - Triggers Render via Webhooks only if tests pass
+  # -------------------------------------------------------------------------
+  deploy:
+    needs: test
+    # Only deploy on pushes to main, not for pull requests
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render Backend Deploy
+        # Using -f to fail the action if Render returns a 4xx/5xx error
+        # Quotes are critical to prevent shell interpretation of the URL '?' character
+        run: |
+          curl -f "${{ secrets.RENDER_BACKEND_HOOK }}"
+      
+      - name: Trigger Render Frontend Deploy
+        run: |
+          curl -f "${{ secrets.RENDER_FRONTEND_HOOK }}"

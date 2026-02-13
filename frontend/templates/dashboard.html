@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Volt-Scheduler: PV Battery Optimizer</title>
+    
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+    
+    <style>
+        body { background-color: #f4f6f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        
+        /* Log Window Styling */
+        .log-window {
+            height: 250px; /* Slightly taller to accommodate more logs */
+            overflow-y: auto;
+            background-color: #1e1e1e;
+            color: #00ff41;
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 0.85rem;
+            padding: 15px;
+            border-radius: 6px;
+            border: 1px solid #444;
+            box-shadow: inset 0 0 10px rgba(0,0,0,0.5);
+        }
+        .log-line { margin: 0; line-height: 1.5; border-bottom: 1px solid #2d2d2d; }
+        
+        /* KPI Cards */
+        .kpi-card { 
+            border-left: 5px solid #0d6efd; 
+            transition: transform 0.2s, box-shadow 0.2s; 
+        }
+        .kpi-card:hover { 
+            transform: translateY(-3px); 
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1); 
+        }
+        
+        .chart-container { min-height: 450px; }
+    </style>
+</head>
+<body>
+
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark mb-4 shadow">
+    <div class="container">
+        <a class="navbar-brand d-flex align-items-center" href="#">
+            <i class="bi bi-lightning-charge-fill text-warning me-2"></i> 
+            Volt Scheduler <span class="badge bg-primary ms-2" style="font-size: 0.7em;">v0.1</span>
+        </a>
+    </div>
+</nav>
+
+<div class="container pb-5">
+    
+    <div class="row mb-4 g-4">
+        <div class="col-lg-4">
+            <div class="card shadow-sm h-100 border-0">
+                <div class="card-header bg-white fw-bold text-secondary">
+                    <i class="bi bi-sliders"></i> Simulation Settings
+                </div>
+                <div class="card-body">
+                    
+                    <div class="alert alert-light border mb-4">
+                        <h6 class="alert-heading fw-bold"><i class="bi bi-info-circle-fill text-primary"></i> How it works</h6>
+                        <p class="small text-muted mb-2">
+                            This tool optimizes a PV + Battery system using real historical data. 
+                            When you click <strong>Start</strong>, the system will:
+                        </p>
+                        <ul class="small text-muted ps-3 mb-0">
+                            <li>Fetch weather (Open-Meteo) & prices (ENTSO-E).</li>
+                            <li>Run a <strong>MILP Optimization Model</strong>.</li>
+                            <li>Simulate a <strong>7-Day Operation Horizon</strong>.</li>
+                            <li>Generate the max-profit charging schedule.</li>
+                        </ul>
+                    </div>
+                    <div class="mb-3">
+                        <label for="start_date" class="form-label fw-bold small text-uppercase text-secondary">Start Date (Historical)</label>
+                        <input type="date" class="form-control form-control-lg" id="start_date">
+                        <div class="form-text">Select a past date to fetch actual data.</div>
+                    </div>
+                    
+                    <button onclick="runSimulation()" class="btn btn-primary btn-lg w-100" id="run-btn">
+                        <i class="bi bi-play-fill"></i> Start Optimization
+                    </button>
+
+                    <div id="error-alert" class="alert alert-danger mt-3 d-none p-2 small"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-8">
+            <div class="card shadow-sm h-100 border-0">
+                <div class="card-header bg-white fw-bold text-secondary d-flex justify-content-between">
+                    <span><i class="bi bi-terminal-fill"></i> System Logs</span>
+                    <span class="badge bg-light text-dark border">Idle</span>
+                </div>
+                <div class="card-body p-0 bg-dark rounded-bottom">
+                    <div id="log-window" class="log-window rounded-0 rounded-bottom">
+                        <p class="log-line text-muted">// Waiting for user input...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="results-section" class="d-none">
+        
+        <h5 class="text-secondary mb-3"><i class="bi bi-speedometer2"></i> Key Performance Indicators (7 Days)</h5>
+        <div class="row mb-4 g-3">
+            <div class="col-md-3">
+                <div class="card kpi-card shadow-sm border-success">
+                    <div class="card-body">
+                        <div class="text-muted small text-uppercase fw-bold">Total Profit</div>
+                        <h2 class="mb-0 text-success fw-bold" id="kpi-profit">€0.00</h2>
+                        <small class="text-success"><i class="bi bi-graph-up-arrow"></i> Net Revenue</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card kpi-card shadow-sm border-warning">
+                    <div class="card-body">
+                        <div class="text-muted small text-uppercase fw-bold">Solar Generation</div>
+                        <h2 class="mb-0 text-warning fw-bold" id="kpi-solar">0 kWh</h2>
+                        <small class="text-muted">Total Energy Produced</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card kpi-card shadow-sm border-info">
+                    <div class="card-body">
+                        <div class="text-muted small text-uppercase fw-bold">Avg Spot Price</div>
+                        <h2 class="mb-0 text-info fw-bold" id="kpi-price">€0.00</h2>
+                        <small class="text-muted">Per MWh</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card kpi-card shadow-sm border-primary">
+                    <div class="card-body">
+                        <div class="text-muted small text-uppercase fw-bold">Battery Cycles</div>
+                        <h2 class="mb-0 text-primary fw-bold" id="kpi-cycles">0</h2>
+                        <small class="text-muted">Full Equivalents</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card shadow-sm mb-4 border-0">
+            <div class="card-header bg-white fw-bold text-secondary">
+                <i class="bi bi-currency-euro"></i> Financial Performance
+            </div>
+            <div class="card-body">
+                <div id="chart-financial" class="chart-container" style="height: 400px;"></div>
+                <div class="text-center text-muted small mt-2">
+                    Compares the market price (grey) with your cumulative profit growth (green area).
+                </div>
+            </div>
+        </div>
+
+        <div class="card shadow-sm mb-4 border-0">
+            <div class="card-header bg-white fw-bold text-secondary">
+                <i class="bi bi-lightning"></i> Power Flow & Battery State
+            </div>
+            <div class="card-body">
+                <div id="chart-energy" class="chart-container" style="height: 600px;"></div>
+                <div class="text-center text-muted small mt-2">
+                    <strong>Top:</strong> Solar (Yellow), Battery Discharging (Green Up), Battery Charging (Red Down). <br>
+                    <strong>Bottom:</strong> Stored Energy in Battery (Blue Line).
+                </div>
+            </div>
+        </div>
+
+    </div> </div>
+
+<script>
+    /**
+     * Main function to trigger simulation and handle streaming response
+     */
+    async function runSimulation() {
+        const startDate = document.getElementById('start_date').value;
+        const logWindow = document.getElementById('log-window');
+        const runBtn = document.getElementById('run-btn');
+        const resultsSection = document.getElementById('results-section');
+        const errorAlert = document.getElementById('error-alert');
+
+        // Validation
+        if (!startDate) { 
+            alert("Please select a valid start date."); 
+            return; 
+        }
+
+        // 1. Reset UI State
+        logWindow.innerHTML = ''; // Clear logs
+        resultsSection.classList.add('d-none'); // Hide charts
+        errorAlert.classList.add('d-none'); // Hide errors
+        runBtn.disabled = true;
+        runBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Processing...';
+
+        try {
+            // 2. Initiate Stream Request
+            const response = await fetch(`/api/run_simulation?start_date=${startDate}`);
+            
+            if (!response.ok) throw new Error(`Server Error: ${response.statusText}`);
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let partialLine = '';
+
+            // 3. Process Stream Chunk-by-Chunk
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+
+                const chunk = decoder.decode(value, { stream: true });
+                const lines = (partialLine + chunk).split('\n');
+                
+                // Handle potential split JSON at end of chunk
+                partialLine = lines.pop(); 
+
+                for (const line of lines) {
+                    if (!line.trim()) continue;
+                    
+                    try {
+                        const msg = JSON.parse(line);
+                        
+                        if (msg.step === 'log') {
+                            // Append to Terminal
+                            const div = document.createElement('div');
+                            div.className = 'log-line';
+                            div.innerHTML = `<span class="text-secondary opacity-50">[${new Date().toLocaleTimeString()}]</span> ${msg.message}`;
+                            logWindow.appendChild(div);
+                            logWindow.scrollTop = logWindow.scrollHeight; // Auto-scroll
+                        } 
+                        else if (msg.step === 'result') {
+                            // Success! Process Data
+                            calculateKPIs(msg.data);
+                            renderCharts(msg.data);
+                            resultsSection.classList.remove('d-none');
+                            
+                            // Final log success message
+                            const successDiv = document.createElement('div');
+                            successDiv.className = 'log-line text-success fw-bold';
+                            successDiv.textContent = ">>> DASHBOARD UPDATED SUCCESSFULLY.";
+                            logWindow.appendChild(successDiv);
+                            logWindow.scrollTop = logWindow.scrollHeight;
+                        } 
+                        else if (msg.step === 'error') {
+                            throw new Error(msg.message);
+                        }
+                    } catch (e) {
+                        console.error("JSON Parse Error:", e);
+                    }
+                }
+            }
+        } catch (err) {
+            errorAlert.textContent = `Error: ${err.message}`;
+            errorAlert.classList.remove('d-none');
+            
+            const errDiv = document.createElement('div');
+            errDiv.className = 'log-line text-danger fw-bold';
+            errDiv.textContent = `>>> CRITICAL ERROR: ${err.message}`;
+            logWindow.appendChild(errDiv);
+        } finally {
+            runBtn.disabled = false;
+            runBtn.innerHTML = '<i class="bi bi-play-fill"></i> Start Optimization';
+        }
+    }
+
+    /**
+     * Calculates totals and averages for the top cards
+     */
+    function calculateKPIs(data) {
+        // --- 1. Total Profit ---
+        // Backend key: 'profit_eur'
+        const totalProfit = data.reduce((sum, d) => sum + (d.profit_eur || 0), 0);
+        
+        // --- 2. Total Solar ---
+        // Backend key: 'power_production_pv_kw'
+        const totalSolar = data.reduce((sum, d) => sum + (d.power_production_pv_kw || 0), 0);
+        
+        // --- 3. Avg Price ---
+        // Backend key: 'price_eur_mwh'
+        const avgPrice = data.reduce((sum, d) => sum + d.price_eur_mwh, 0) / (data.length || 1);
+        
+        // --- 4. Battery Cycles ---
+        // Sum of all Discharge kW / Battery Capacity (10kWh)
+        const totalDischarge = data.reduce((sum, d) => sum + (d.power_battery_discharge_kw || 0), 0);
+        const cycles = totalDischarge / 10.0; 
+
+        // Update DOM
+        document.getElementById('kpi-profit').textContent = `€${totalProfit.toFixed(2)}`;
+        document.getElementById('kpi-solar').textContent = `${totalSolar.toFixed(1)} kWh`;
+        document.getElementById('kpi-price').textContent = `€${avgPrice.toFixed(2)}`;
+        document.getElementById('kpi-cycles').textContent = cycles.toFixed(1);
+    }
+
+    /**
+     * Renders Plotly charts using standard keys and MANUAL DOMAINS
+     */
+    function renderCharts(data) {
+        const time = data.map(d => d.timestamp);
+
+        // ============================================
+        // CHART 1: FINANCIAL OVERVIEW
+        // ============================================
+        
+        const tracePrice = {
+            x: time, 
+            y: data.map(d => d.price_eur_mwh),
+            name: 'Spot Price (€/MWh)', 
+            type: 'scatter', 
+            mode: 'lines',
+            line: {color: '#adb5bd', dash: 'dot', width: 1.5},
+            hoverinfo: 'y+name'
+        };
+
+        // Calculate Cumulative Profit
+        let cumSum = 0;
+        const cumProfit = data.map(d => { 
+            cumSum += (d.profit_eur || 0); 
+            return cumSum; 
+        });
+        
+        const traceProfit = {
+            x: time, 
+            y: cumProfit,
+            name: 'Cumulative Profit (€)', 
+            type: 'scatter', 
+            mode: 'lines',
+            fill: 'tozeroy',
+            yaxis: 'y2', 
+            line: {color: '#198754', width: 2.5} // Bootstrap Success Color
+        };
+
+        const layoutFin = {
+            margin: { t: 30, l: 60, r: 60, b: 40 },
+            showlegend: true, 
+            legend: { orientation: 'h', y: 1.1, x: 0.5, xanchor: 'center' },
+            yaxis: { 
+                title: 'Spot Price (€/MWh)', 
+                gridcolor: '#f0f0f0' 
+            },
+            yaxis2: { 
+                title: 'Total Profit (€)', 
+                overlaying: 'y', 
+                side: 'right',
+                gridcolor: '#f0f0f0'
+            },
+            plot_bgcolor: '#ffffff',
+            paper_bgcolor: '#ffffff'
+        };
+
+        Plotly.newPlot('chart-financial', [tracePrice, traceProfit], layoutFin, {responsive: true});
+
+
+        // ============================================
+        // CHART 2: ENERGY FLOW & BATTERY (With Manual Domains)
+        // ============================================
+
+        // 1. PV Generation (Area) - Goes to Top Axis (y)
+        const tracePV = {
+            x: time, 
+            y: data.map(d => d.power_production_pv_kw || 0),
+            name: 'PV Gen (kW)', 
+            type: 'scatter', 
+            fill: 'tozeroy',
+            line: {color: '#ffc107', width: 0}, 
+            xaxis: 'x', 
+            yaxis: 'y'
+        };
+
+        // 2. Battery Discharge (Positive Bar) - Goes to Top Axis (y)
+        const traceDischarge = {
+            x: time, 
+            y: data.map(d => d.power_battery_discharge_kw || 0),
+            name: 'Discharge', 
+            type: 'bar',
+            marker: {color: '#20c997'}, 
+            xaxis: 'x', 
+            yaxis: 'y'
+        };
+
+        // 3. Battery Charge (Negative Bar) - Goes to Top Axis (y)
+        const traceCharge = {
+            x: time, 
+            y: data.map(d => -1 * (d.power_battery_charge_kw || 0)),
+            name: 'Charge', 
+            type: 'bar',
+            marker: {color: '#dc3545'}, 
+            xaxis: 'x', 
+            yaxis: 'y'
+        };
+
+        // 4. Stored Energy (Line) - Goes to Bottom Axis (y2)
+        const traceSoE = {
+            x: time, 
+            y: data.map(d => d.stored_energy_kwh || 0),
+            name: 'Stored Energy (kWh)', 
+            type: 'scatter',
+            mode: 'lines',
+            line: {color: '#0d6efd', width: 3}, 
+            fill: 'tozeroy',
+            xaxis: 'x', 
+            yaxis: 'y2'
+        };
+
+        const layoutEnergy = {
+            margin: { t: 30, l: 60, r: 30, b: 40 },
+            showlegend: true, 
+            legend: { orientation: 'h', y: 1.1, x: 0.5, xanchor: 'center' },
+            barmode: 'relative', 
+            
+            // X-Axis Shared
+            xaxis: { 
+                showgrid: true,
+                gridcolor: '#f0f0f0',
+                anchor: 'y2' // Anchors to bottom plot
+            },
+            
+            // Top Plot (Power) - Occupies Top 50%
+            yaxis: { 
+                title: 'Power (kW)', 
+                domain: [0.55, 1],
+                fixedrange: false,
+                gridcolor: '#f0f0f0'
+            },
+            
+            // Bottom Plot (Energy) - Occupies Bottom 45%
+            yaxis2: { 
+                title: 'Stored Energy (kWh)', 
+                domain: [0, 0.45],
+                fixedrange: false,
+                gridcolor: '#f0f0f0'
+            },
+            
+            height: 600,
+            hovermode: 'x unified',
+            plot_bgcolor: '#ffffff',
+            paper_bgcolor: '#ffffff'
+        };
+
+        Plotly.newPlot('chart-energy', [tracePV, traceDischarge, traceCharge, traceSoE], layoutEnergy, {responsive: true});
+    }
+</script>
+
+</body>
+</html>
